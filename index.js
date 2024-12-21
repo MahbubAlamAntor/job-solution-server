@@ -2,15 +2,33 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config()
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+const jwt = require('jsonwebtoken')
+const cookieParser = require('cookie-parser')
 
 const port = process.env.PORT || 5000;
 const app = express();
 
 
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:5173'],
+  credentials: true,
+  optionsSuccessStatus: 200,
+}));
 app.use(express.json());
+app.use(cookieParser())
 
 
+const verifyToken = (req, res, next) => {
+  const token = req.cookies?.token;
+  if (!token) return res.status(401).send({ message: 'UnAuthorize Email' })
+  jwt.verify(token, process.env.SECRECT_KEY, (error, decoded) => {
+    if (error) {
+      return res.status(401).send({ message: 'UnAuthorize Email' })
+    }
+    req.user = decoded
+  })
+  next();
+}
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.jypts.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -28,6 +46,29 @@ async function run() {
     const jobsCollection = client.db('job-solution').collection('jobs');
     const bidCollection = client.db('job-solution').collection('bid')
 
+
+    // jwt
+
+    app.post('/jwt', async (req, res) => {
+      const email = req.body;
+      const token = jwt.sign(email, process.env.SECRECT_KEY, { expiresIn: '1d' })
+      res.cookie('token', token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict',
+      }).send({ success: true })
+    })
+
+    app.get('/logout', async (req, res) => {
+      res.clearCookie('token', {
+        maxAge: 0,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict',
+      }).send({ success: true })
+    })
+
+    // all jobs
+
     app.post('/add-job', async (req, res) => {
       const query = req.body;
       const result = await jobsCollection.insertOne(query);
@@ -39,7 +80,7 @@ async function run() {
       res.send(result)
     });
 
-    app.get('/job/:email', async (req, res) => {
+    app.get('/job/:email', async(req, res) => {
       const email = req.params.email;
       const query = { 'buyer.email': email };
       const result = await jobsCollection.find(query).toArray();
@@ -93,7 +134,8 @@ async function run() {
       res.send(result)
     })
 
-    app.get('/bids/:email', async (req, res) => {
+    app.get('/bids/:email', verifyToken, async (req, res) => {
+      const decodedEmail = req.user?.email
       const email = req.params.email;
       // const isBuyer = req.query.buyer;
       // const query = {};
@@ -102,13 +144,16 @@ async function run() {
       // }else{
       //   query.email = email
       // }
+      if(decodedEmail !== email) return res.status(401).send({message: 'unAuthorize Access'})
       const query = { email }
       const result = await bidCollection.find(query).toArray();
       res.send(result)
     })
 
-    app.get('/bidsRequest/:email', async (req, res) => {
+    app.get('/bidsRequest/:email',verifyToken, async (req, res) => {
+      const decodedEmail = req.user?.email;
       const email = req.params.email;
+      if(decodedEmail !== email) return res.status(401).send({message: 'unAuthorize Access'})
       const query = { buyer: email }
       const result = await bidCollection.find(query).toArray();
       res.send(result)
@@ -131,7 +176,7 @@ async function run() {
       const sort = req.query.sort;
 
       let options = {};
-      if (sort) options = { sort: { date: sort === 'dsc' ? 1 : -1 } }
+      if (sort) options = { sort: { date: sort === 'asc' ? 1 : -1 } }
 
       let query = {
         title: {
